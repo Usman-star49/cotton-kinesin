@@ -652,32 +652,80 @@ def plot_duplication_summary(dup_table, figdir):
 
 
 def plot_kaks_distribution(kaks_rows, figdir):
-    """Histograms of Ka, Ks, and Ka/Ks (omega)."""
-    kas    = [r["Ka"]    for r in kaks_rows if r["Ka"]    is not None]
-    kss    = [r["Ks"]    for r in kaks_rows if r["Ks"]    is not None]
-    omegas = [r["Omega"] for r in kaks_rows if r["Omega"] is not None]
+    """
+    Three-panel figure: Ka/Ks (omega), Ka, and Ks distributions grouped by
+    subgenome pair, shown as horizontal box-plots.
+    Pair order mirrors evolutionary distance (homeologs first, orthologs after).
+    """
+    # Build per-pair data
+    PAIR_ORDER = [
+        "GhA vs GhD",
+        "GbA vs GbD",
+        "GbA vs GhA",
+        "GhD vs Gr",
+        "GbD vs Gr",
+        "GbD vs GhD",
+        "Ga vs GhA",
+        "Ga vs GbA",
+    ]
+    PAIR_COLORS = {
+        "GhA vs GhD":  "#9b59b6",
+        "GbA vs GbD":  "#8e44ad",
+        "GbA vs GhA":  "#3498db",
+        "GhD vs Gr":   "#1abc9c",
+        "GbD vs Gr":   "#16a085",
+        "GbD vs GhD":  "#2980b9",
+        "Ga vs GhA":   "#e67e22",
+        "Ga vs GbA":   "#d35400",
+    }
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-    for ax, data, label, color in [
-        (axes[0], kas,    "Ka (nonsynonymous)", "#e74c3c"),
-        (axes[1], kss,    "Ks (synonymous)",    "#3498db"),
-        (axes[2], omegas, "Ka/Ks (omega)",      "#2ecc71"),
+    pair_ka = defaultdict(list)
+    pair_ks = defaultdict(list)
+    pair_om = defaultdict(list)
+    for row in kaks_rows:
+        key = " vs ".join(sorted([row["SubA"], row["SubB"]]))
+        if row["Ka"]    is not None: pair_ka[key].append(row["Ka"])
+        if row["Ks"]    is not None: pair_ks[key].append(row["Ks"])
+        if row["Omega"] is not None: pair_om[key].append(row["Omega"])
+
+    # Only keep pairs that appear in the data
+    pairs = [p for p in PAIR_ORDER if pair_om.get(p)]
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+    for ax, data_dict, xlabel, title in [
+        (axes[0], pair_om, "Ka/Ks (omega)",      "Ka/Ks by subgenome pair"),
+        (axes[1], pair_ka, "Ka (nonsynonymous)", "Ka by subgenome pair"),
+        (axes[2], pair_ks, "Ks (synonymous)",    "Ks by subgenome pair"),
     ]:
-        if not data:
-            ax.text(0.5, 0.5, "No data", ha="center", va="center",
-                    transform=ax.transAxes, fontsize=10)
-            ax.set_title(label, fontsize=10)
-            continue
-        ax.hist(data, bins=30, color=color, edgecolor="white",
-                linewidth=0.5, alpha=0.85)
-        ax.axvline(float(np.median(data)), color="k", linestyle="--",
-                   linewidth=1, label=f"Median={np.median(data):.3f}")
-        ax.set_xlabel(label, fontsize=10)
-        ax.set_ylabel("Pairs", fontsize=10)
-        ax.legend(fontsize=8)
+        data_to_plot = [data_dict.get(p, []) for p in pairs]
+        bp = ax.boxplot(
+            data_to_plot,
+            vert=False,
+            patch_artist=True,
+            widths=0.5,
+            medianprops=dict(color="black", linewidth=1.5),
+            flierprops=dict(marker="o", markersize=3, linestyle="none",
+                            alpha=0.5),
+        )
+        for patch, pair in zip(bp["boxes"], pairs):
+            patch.set_facecolor(PAIR_COLORS.get(pair, "#aaaaaa"))
+            patch.set_alpha(0.75)
+
+        # Add neutral line for omega panel
+        if xlabel.startswith("Ka/Ks"):
+            ax.axvline(1.0, color="red", linestyle="--", linewidth=1,
+                       label="ω = 1 (neutral)")
+            ax.legend(fontsize=8)
+
+        ax.set_yticks(range(1, len(pairs) + 1))
+        ax.set_yticklabels(pairs, fontsize=8)
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_title(title, fontsize=10, fontweight="bold")
         ax.spines[["top", "right"]].set_visible(False)
 
-    fig.suptitle("Kinesin-7 substitution rates", fontsize=13, fontweight="bold")
+    fig.suptitle("Kinesin-7 substitution rates by subgenome pair",
+                 fontsize=12, fontweight="bold")
     plt.tight_layout()
     out = os.path.join(figdir, "kinesin7_kaks_distribution.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
@@ -686,47 +734,74 @@ def plot_kaks_distribution(kaks_rows, figdir):
 
 
 def plot_kaks_by_category(kaks_rows, figdir):
-    """Violin + jitter of Ka/Ks (omega) grouped by duplication category."""
-    cat_omegas = defaultdict(list)
-    for row in kaks_rows:
-        if row["Omega"] is not None:
-            cat_omegas[row["Category"]].append(row["Omega"])
+    """
+    Scatter + median bar of Ka/Ks (omega) for each subgenome pair,
+    coloured by duplication category (Ortholog vs Homeolog vs Proximal).
+    """
+    PAIR_ORDER = [
+        "GhA vs GhD",
+        "GbA vs GbD",
+        "GbA vs GhA",
+        "GhD vs Gr",
+        "GbD vs Gr",
+        "GbD vs GhD",
+        "Ga vs GhA",
+        "Ga vs GbA",
+    ]
 
-    cats = [c for c in CATEGORIES if cat_omegas.get(c)]
-    if not cats:
-        print("  [SKIP] kinesin7_kaks_vs_category.png -- no omega values")
+    # Collect (pair, omega, category) tuples
+    points = []
+    for row in kaks_rows:
+        if row["Omega"] is None:
+            continue
+        key = " vs ".join(sorted([row["SubA"], row["SubB"]]))
+        points.append((key, row["Omega"], row["Category"]))
+
+    pairs = [p for p in PAIR_ORDER if any(pt[0] == p for pt in points)]
+    if not pairs:
+        print("  [SKIP] kinesin7_kaks_vs_subgenome.png -- no omega values")
         return
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    parts = ax.violinplot(
-        [cat_omegas[c] for c in cats],
-        positions=list(range(len(cats))),
-        showmedians=True,
-        showextrema=True,
-    )
-    for body, cat in zip(parts["bodies"], cats):
-        body.set_facecolor(CAT_COLORS.get(cat, "#888888"))
-        body.set_alpha(0.7)
-
+    fig, ax = plt.subplots(figsize=(11, 5))
     rng = np.random.default_rng(seed=42)
-    for i, cat in enumerate(cats):
-        vals = cat_omegas[cat]
-        jitter = rng.uniform(-0.15, 0.15, size=len(vals))
-        ax.scatter(np.full(len(vals), i) + jitter, vals,
-                   color=CAT_COLORS.get(cat, "#888888"),
-                   alpha=0.5, s=12, zorder=3)
+
+    for i, pair in enumerate(pairs):
+        pair_pts = [(om, cat) for (p, om, cat) in points if p == pair]
+        for cat in CATEGORIES:
+            vals = [om for om, c in pair_pts if c == cat]
+            if not vals:
+                continue
+            jitter = rng.uniform(-0.18, 0.18, size=len(vals))
+            ax.scatter(np.full(len(vals), i) + jitter, vals,
+                       color=CAT_COLORS.get(cat, "#888888"),
+                       alpha=0.65, s=22, zorder=3,
+                       label=cat if i == 0 else "_nolegend_")
+        # Median bar
+        all_om = [om for om, _ in pair_pts]
+        med = sorted(all_om)[len(all_om) // 2]
+        ax.plot([i - 0.3, i + 0.3], [med, med],
+                color="black", linewidth=2, zorder=4)
 
     ax.axhline(1.0, color="red", linestyle="--", linewidth=1,
-               label="omega = 1 (neutral)")
-    ax.set_xticks(list(range(len(cats))))
-    ax.set_xticklabels(cats, fontsize=10)
+               label="ω = 1 (neutral)")
+    ax.set_xticks(range(len(pairs)))
+    ax.set_xticklabels(pairs, rotation=30, ha="right", fontsize=9)
     ax.set_ylabel("Ka/Ks (omega)", fontsize=11)
-    ax.set_title("Ka/Ks by duplication category", fontsize=12, fontweight="bold")
-    ax.legend(fontsize=9)
+    ax.set_title("Ka/Ks per subgenome comparison (coloured by category)",
+                 fontsize=11, fontweight="bold")
+
+    # Deduplicated legend
+    handles, labels = ax.get_legend_handles_labels()
+    seen = {}
+    for h, l in zip(handles, labels):
+        if l not in seen:
+            seen[l] = h
+    ax.legend(seen.values(), seen.keys(), fontsize=9,
+              loc="upper right", framealpha=0.8)
     ax.spines[["top", "right"]].set_visible(False)
 
     plt.tight_layout()
-    out = os.path.join(figdir, "kinesin7_kaks_vs_category.png")
+    out = os.path.join(figdir, "kinesin7_kaks_vs_subgenome.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out}")
