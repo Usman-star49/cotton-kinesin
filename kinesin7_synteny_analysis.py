@@ -657,26 +657,18 @@ def plot_kaks_distribution(kaks_rows, figdir):
     subgenome pair, shown as horizontal box-plots.
     Pair order mirrors evolutionary distance (homeologs first, orthologs after).
     """
-    # Build per-pair data
+    # Build per-pair data -- Gh-centric: A-subgenome then D-subgenome
     PAIR_ORDER = [
-        "GhA vs GhD",
-        "GbA vs GbD",
-        "GbA vs GhA",
-        "GhD vs Gr",
-        "GbD vs Gr",
-        "GbD vs GhD",
-        "Ga vs GhA",
-        "Ga vs GbA",
+        "Ga vs GhA",   # A-subgenome: diploid ancestor vs Gh
+        "GbA vs GhA",  # A-subgenome: Gh vs Gb
+        "GhD vs Gr",   # D-subgenome: diploid donor vs Gh
+        "GbD vs GhD",  # D-subgenome: Gh vs Gb
     ]
     PAIR_COLORS = {
-        "GhA vs GhD":  "#9b59b6",
-        "GbA vs GbD":  "#8e44ad",
-        "GbA vs GhA":  "#3498db",
-        "GhD vs Gr":   "#1abc9c",
-        "GbD vs Gr":   "#16a085",
-        "GbD vs GhD":  "#2980b9",
-        "Ga vs GhA":   "#e67e22",
-        "Ga vs GbA":   "#d35400",
+        "Ga vs GhA":  "#e67e22",   # A-subgenome, light
+        "GbA vs GhA": "#c0392b",   # A-subgenome, dark
+        "GhD vs Gr":  "#1abc9c",   # D-subgenome, light
+        "GbD vs GhD": "#2980b9",   # D-subgenome, dark
     }
 
     pair_ka = defaultdict(list)
@@ -724,7 +716,7 @@ def plot_kaks_distribution(kaks_rows, figdir):
         ax.set_title(title, fontsize=10, fontweight="bold")
         ax.spines[["top", "right"]].set_visible(False)
 
-    fig.suptitle("Kinesin-7 substitution rates by subgenome pair",
+    fig.suptitle("Kinesin-7 substitution rates — G. hirsutum-centric subgenome pairs",
                  fontsize=12, fontweight="bold")
     plt.tight_layout()
     out = os.path.join(figdir, "kinesin7_kaks_distribution.png")
@@ -738,15 +730,12 @@ def plot_kaks_by_category(kaks_rows, figdir):
     Scatter + median bar of Ka/Ks (omega) for each subgenome pair,
     coloured by duplication category (Ortholog vs Homeolog vs Proximal).
     """
+    # Gh-centric: A-subgenome (Ga→GhA→GbA) then D-subgenome (Gr→GhD→GbD)
     PAIR_ORDER = [
-        "GhA vs GhD",
-        "GbA vs GbD",
-        "GbA vs GhA",
-        "GhD vs Gr",
-        "GbD vs Gr",
-        "GbD vs GhD",
-        "Ga vs GhA",
-        "Ga vs GbA",
+        "Ga vs GhA",   # A-subgenome: diploid ancestor vs Gh
+        "GbA vs GhA",  # A-subgenome: Gh vs Gb
+        "GhD vs Gr",   # D-subgenome: diploid donor vs Gh
+        "GbD vs GhD",  # D-subgenome: Gh vs Gb
     ]
 
     # Collect (pair, omega, category) tuples
@@ -787,7 +776,7 @@ def plot_kaks_by_category(kaks_rows, figdir):
     ax.set_xticks(range(len(pairs)))
     ax.set_xticklabels(pairs, rotation=30, ha="right", fontsize=9)
     ax.set_ylabel("Ka/Ks (omega)", fontsize=11)
-    ax.set_title("Ka/Ks per subgenome comparison (coloured by category)",
+    ax.set_title("Ka/Ks — G. hirsutum-centric subgenome pairs (coloured by category)",
                  fontsize=11, fontweight="bold")
 
     # Deduplicated legend
@@ -802,6 +791,374 @@ def plot_kaks_by_category(kaks_rows, figdir):
 
     plt.tight_layout()
     out = os.path.join(figdir, "kinesin7_kaks_vs_subgenome.png")
+    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {out}")
+
+
+def plot_phylo_tree(kaks_rows, figdir):
+    """
+    Two-panel figure:
+      Left  – Gossypium phylogenetic tree with divergence time axis (Mya,
+              published estimates). Ka/Ks annotated as coloured boxes per pair.
+              Homeolog comparison shown as a dashed arc.
+      Right – Horizontal bar chart: median Ka/Ks (± IQR) for the 5
+              Gh-centric pairwise comparisons.
+    """
+    from matplotlib.colors import Normalize
+
+    # ── 1. Collect pairwise statistics ──────────────────────────────────────
+    TARGET_PAIRS = [
+        "GbA vs GhA",   # A-sub sister tetraploid
+        "Ga vs GhA",    # A-sub diploid donor
+        "GbD vs GhD",   # D-sub sister tetraploid
+        "GhD vs Gr",    # D-sub diploid donor
+        "GhA vs GhD",   # homeolog (polyploidization)
+    ]
+    pair_data = defaultdict(lambda: {"om": [], "ks": []})
+    for row in kaks_rows:
+        key = " vs ".join(sorted([row["SubA"], row["SubB"]]))
+        if key not in TARGET_PAIRS or row["Omega"] is None:
+            continue
+        pair_data[key]["om"].append(row["Omega"])
+        if row["Ks"] is not None:
+            try:
+                ks_val = float(str(row["Ks"]))
+                if ks_val > 0:
+                    pair_data[key]["ks"].append(ks_val)
+            except (ValueError, TypeError):
+                pass
+
+    stats = {}
+    for k in TARGET_PAIRS:
+        v = pair_data.get(k, {"om": [], "ks": []})
+        if not v["om"]:
+            continue
+        om_s = sorted(v["om"])
+        ks_s = sorted(v["ks"]) if v["ks"] else []
+        n = len(om_s)
+        stats[k] = {
+            "om_med": om_s[n // 2],
+            "om_q1":  om_s[max(0, n // 4)],
+            "om_q3":  om_s[min(n - 1, 3 * n // 4)],
+            "ks_med": ks_s[len(ks_s) // 2] if ks_s else None,
+            "n":      n,
+        }
+
+    # ── 2. Tree coordinate system ────────────────────────────────────────────
+    # x = negative Mya  (x=0 = present, x=-6 = 6 Mya ago)
+    # Published divergence times (Wendel & Grover 2015; Paterson et al. 2012)
+    T_ROOT  = -6.0    # A/D genome divergence
+    T_POLY  = -1.5    # allotetraploidization
+    T_SPLIT = -0.5    # Gh vs Gb post-polyploid divergence
+    T_TIP   =  0.0
+
+    # Leaf y-positions (A-subgenome top, D-subgenome bottom)
+    Y = {
+        "GhA": 5.5, "GbA": 4.5, "Ga": 3.5,
+        "GhD": 2.0, "GbD": 1.0, "Gr": 0.0,
+    }
+    # Internal node y = midpoint of children
+    ny_ghgb_A = (Y["GhA"] + Y["GbA"]) / 2        # 5.0
+    ny_poly_A  = (ny_ghgb_A + Y["Ga"]) / 2        # 4.25
+    ny_ghgb_D  = (Y["GhD"] + Y["GbD"]) / 2        # 1.5
+    ny_poly_D  = (ny_ghgb_D + Y["Gr"]) / 2         # 0.75
+    ny_root    = (ny_poly_A + ny_poly_D) / 2        # 2.5
+
+    GREY = "#444444"
+    lkw  = dict(color=GREY, lw=2.0, solid_capstyle="round", zorder=2)
+
+    fig, (ax_tree, ax_bar) = plt.subplots(
+        1, 2, figsize=(15, 6.5),
+        gridspec_kw={"width_ratios": [2.2, 1]},
+    )
+
+    # ── 3. Draw tree branches ────────────────────────────────────────────────
+    def hline(ax, xa, xb, y, **kw): ax.plot([xa, xb], [y, y], **kw)
+    def vline(ax, x, ya, yb, **kw): ax.plot([x, x], [ya, yb], **kw)
+
+    # A-genome clade
+    hline(ax_tree, T_TIP,   T_SPLIT, Y["GhA"],   **lkw)
+    hline(ax_tree, T_TIP,   T_SPLIT, Y["GbA"],   **lkw)
+    vline(ax_tree, T_SPLIT, Y["GbA"], Y["GhA"],  **lkw)
+    hline(ax_tree, T_SPLIT, T_POLY,  ny_ghgb_A,  **lkw)
+    hline(ax_tree, T_TIP,   T_POLY,  Y["Ga"],    **lkw)
+    vline(ax_tree, T_POLY,  Y["Ga"],  ny_ghgb_A, **lkw)
+    hline(ax_tree, T_POLY,  T_ROOT,  ny_poly_A,  **lkw)
+
+    # D-genome clade
+    hline(ax_tree, T_TIP,   T_SPLIT, Y["GhD"],   **lkw)
+    hline(ax_tree, T_TIP,   T_SPLIT, Y["GbD"],   **lkw)
+    vline(ax_tree, T_SPLIT, Y["GbD"], Y["GhD"],  **lkw)
+    hline(ax_tree, T_SPLIT, T_POLY,  ny_ghgb_D,  **lkw)
+    hline(ax_tree, T_TIP,   T_POLY,  Y["Gr"],    **lkw)
+    vline(ax_tree, T_POLY,  Y["Gr"],  ny_ghgb_D, **lkw)
+    hline(ax_tree, T_POLY,  T_ROOT,  ny_poly_D,  **lkw)
+
+    # Root
+    vline(ax_tree, T_ROOT, ny_poly_D, ny_poly_A, **lkw)
+
+    # ── 4. Leaf labels ───────────────────────────────────────────────────────
+    SP_COLOR = {
+        "GhA": "#1a5276", "GbA": "#c0392b", "Ga":  "#d35400",
+        "GhD": "#1a5276", "GbD": "#c0392b", "Gr":  "#1abc9c",
+    }
+    SP_LABEL = {
+        "GhA": "G. hirsutum (A-sub)",
+        "GbA": "G. barbadense (A-sub)",
+        "Ga":  "G. arboreum",
+        "GhD": "G. hirsutum (D-sub)",
+        "GbD": "G. barbadense (D-sub)",
+        "Gr":  "G. raimondii",
+    }
+    for sp, y in Y.items():
+        ax_tree.plot(T_TIP, y, "o", color=SP_COLOR[sp], ms=8, zorder=5)
+        ax_tree.text(0.12, y, SP_LABEL[sp], va="center", ha="left",
+                     fontsize=9, color=SP_COLOR[sp], fontweight="bold")
+
+    # Internal node markers + time labels
+    for t, ny, label in [
+        (T_SPLIT, ny_ghgb_A, ""),
+        (T_SPLIT, ny_ghgb_D, ""),
+        (T_POLY,  ny_poly_A, "~1.5 Mya\n(polyploidization)"),
+        (T_POLY,  ny_poly_D, ""),
+        (T_ROOT,  ny_root,   "~6 Mya\n(A/D split)"),
+    ]:
+        ax_tree.plot(t, ny, "o", color=GREY, ms=5, zorder=4)
+        if label:
+            ax_tree.text(t, ny + 0.35, label, ha="center", va="bottom",
+                         fontsize=7.5, color="#666666",
+                         bbox=dict(boxstyle="round,pad=0.2", fc="white",
+                                   ec="#cccccc", alpha=0.8))
+
+    # Vertical guide lines at key times
+    for t, lbl in [(T_POLY, ""), (T_ROOT, "")]:
+        ax_tree.axvline(t, color="#dddddd", ls="--", lw=1, zorder=0)
+
+    ax_tree.set_xlim(T_ROOT - 0.5, 2.2)
+    ax_tree.set_ylim(-0.8, 6.6)
+    ax_tree.set_xticks([T_ROOT, -3, T_POLY, T_SPLIT, 0])
+    ax_tree.set_xticklabels(["6", "3", "1.5", "0.5", "0\n(Present)"], fontsize=9)
+    ax_tree.set_xlabel("Divergence time (Mya)", fontsize=10)
+    ax_tree.spines[["top", "right", "left"]].set_visible(False)
+    ax_tree.set_yticks([])
+    ax_tree.set_title("Gossypium kinesin-7 phylogenetic context", fontsize=10,
+                       fontweight="bold")
+
+    # ── 5. Ka/Ks colour annotations ─────────────────────────────────────────
+    cmap_om = plt.get_cmap("RdYlGn_r")
+    norm_om = Normalize(vmin=0.0, vmax=0.8)
+
+    def om_color(om):
+        return cmap_om(norm_om(min(om, 0.8)))
+
+    # Annotations alongside each comparison: (pair, x_pos, y_midpoint)
+    ANNOT_POS = [
+        ("GbA vs GhA",  -0.25, (Y["GhA"] + Y["GbA"]) / 2),
+        ("Ga vs GhA",   -0.80, (Y["Ga"]  + Y["GhA"]) / 2),
+        ("GbD vs GhD",  -0.25, (Y["GhD"] + Y["GbD"]) / 2),
+        ("GhD vs Gr",   -0.80, (Y["GhD"] + Y["Gr"])  / 2),
+    ]
+    for pair_key, x, ym in ANNOT_POS:
+        if pair_key not in stats:
+            continue
+        om  = stats[pair_key]["om_med"]
+        ks  = stats[pair_key]["ks_med"]
+        col = om_color(om)
+        lbl = f"ω = {om:.2f}"
+        if ks is not None:
+            lbl += f"\nKs = {ks:.3f}"
+        ax_tree.annotate(
+            lbl,
+            xy=(x, ym),
+            fontsize=7.5, ha="center", va="center",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor=col,
+                      edgecolor="white", alpha=0.88),
+            color="black", zorder=6,
+        )
+
+    # Homeolog dashed arc between GhA and GhD
+    if "GhA vs GhD" in stats:
+        om  = stats["GhA vs GhD"]["om_med"]
+        ks  = stats["GhA vs GhD"]["ks_med"]
+        col = om_color(om)
+        lbl = f"ω = {om:.2f}"
+        if ks is not None:
+            lbl += f"\nKs = {ks:.3f}"
+        # Arc
+        ax_tree.annotate(
+            "", xy=(T_POLY / 2, Y["GhA"]),
+            xytext=(T_POLY / 2, Y["GhD"]),
+            arrowprops=dict(arrowstyle="-", color=col, lw=2.2,
+                            linestyle="dashed",
+                            connectionstyle="arc3,rad=-0.35"),
+            zorder=6,
+        )
+        ax_tree.text(
+            T_POLY / 2 - 0.5, (Y["GhA"] + Y["GhD"]) / 2,
+            f"Homeolog\n{lbl}", ha="right", va="center",
+            fontsize=7.5, color=col, fontweight="bold",
+        )
+
+    # Colorbar
+    sm = plt.cm.ScalarMappable(cmap=cmap_om, norm=norm_om)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax_tree, orientation="horizontal",
+                        fraction=0.035, pad=0.10, shrink=0.45)
+    cbar.set_label("Ka/Ks (ω)", fontsize=8)
+    cbar.ax.tick_params(labelsize=7)
+
+    # ── 6. Right panel: median Ka/Ks bar chart ───────────────────────────────
+    PAIR_LABELS = {
+        "GbA vs GhA":  "GbA–GhA\n(A-sub, tetraploid sisters)",
+        "Ga vs GhA":   "Ga–GhA\n(A-sub, diploid donor)",
+        "GbD vs GhD":  "GbD–GhD\n(D-sub, tetraploid sisters)",
+        "GhD vs Gr":   "GhD–Gr\n(D-sub, diploid donor)",
+        "GhA vs GhD":  "GhA–GhD\n(homeolog, polyploidization)",
+    }
+    ordered = [p for p in TARGET_PAIRS if p in stats]
+    for i, p in enumerate(ordered):
+        om  = stats[p]["om_med"]
+        q1  = stats[p]["om_q1"]
+        q3  = stats[p]["om_q3"]
+        col = om_color(om)
+        ax_bar.barh(i, om, color=col, alpha=0.85, height=0.55, zorder=3)
+        ax_bar.plot([q1, q3], [i, i], color="#222222", lw=3,
+                    solid_capstyle="round", zorder=4)
+        ax_bar.text(om + 0.015, i, f"{om:.3f}  (n={stats[p]['n']})",
+                    va="center", fontsize=8)
+
+    ax_bar.axvline(1.0, color="red", ls="--", lw=1, label="ω = 1 (neutral)")
+    ax_bar.set_yticks(range(len(ordered)))
+    ax_bar.set_yticklabels([PAIR_LABELS[p] for p in ordered], fontsize=9)
+    ax_bar.set_xlabel("Median Ka/Ks (ω)", fontsize=10)
+    ax_bar.set_title("Selection pressure\n(median ± IQR)", fontsize=10,
+                      fontweight="bold")
+    ax_bar.set_xlim(0, max(stats[p]["om_q3"] for p in ordered) * 1.3 + 0.25)
+    ax_bar.legend(fontsize=8, loc="lower right")
+    ax_bar.spines[["top", "right"]].set_visible(False)
+    ax_bar.invert_yaxis()
+
+    fig.suptitle(
+        "G. hirsutum kinesin-7 — evolutionary divergence and selection pressure",
+        fontsize=12, fontweight="bold",
+    )
+    plt.tight_layout()
+    out = os.path.join(figdir, "kinesin7_phylo_kaks.png")
+    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {out}")
+
+
+def plot_gh_comprehensive(kaks_rows, figdir):
+    """
+    Two-panel figure focused on G. hirsutum:
+      Left  — Ka/Ks (omega) jitter + median bar for all 5 Gh-relevant pairs
+      Right — Ks jitter + median bar for the same pairs (proxy for divergence time)
+
+    Pair order (top → bottom / left → right):
+      1. GhA vs GhD   [intra-Gh homeolog]   — shaded background
+      2. Ga vs GhA    [A-sub, diploid donor]
+      3. GbA vs GhA   [A-sub, inter-tetraploid]
+      4. GhD vs Gr    [D-sub, diploid donor]
+      5. GbD vs GhD   [D-sub, inter-tetraploid]
+    """
+    PAIR_ORDER = [
+        "GhA vs GhD",  # homeolog
+        "Ga vs GhA",   # A-sub: Ga -> Gh
+        "GbA vs GhA",  # A-sub: Gh vs Gb
+        "GhD vs Gr",   # D-sub: Gr -> Gh
+        "GbD vs GhD",  # D-sub: Gh vs Gb
+    ]
+    PAIR_COLORS = {
+        "GhA vs GhD":  "#9b59b6",
+        "Ga vs GhA":   "#e67e22",
+        "GbA vs GhA":  "#c0392b",
+        "GhD vs Gr":   "#1abc9c",
+        "GbD vs GhD":  "#2980b9",
+    }
+    PAIR_LABELS = {
+        "GhA vs GhD":  "GhA vs GhD\n(homeolog)",
+        "Ga vs GhA":   "Ga vs GhA\n(A-sub ancestor)",
+        "GbA vs GhA":  "GbA vs GhA\n(A-sub orthologs)",
+        "GhD vs Gr":   "GhD vs Gr\n(D-sub ancestor)",
+        "GbD vs GhD":  "GbD vs GhD\n(D-sub orthologs)",
+    }
+
+    # Collect data
+    data = defaultdict(list)   # pair -> list of (omega, ks, category)
+    for row in kaks_rows:
+        if row["Omega"] is None or row["Ks"] is None:
+            continue
+        key = " vs ".join(sorted([row["SubA"], row["SubB"]]))
+        if key in PAIR_ORDER:
+            data[key].append((row["Omega"], row["Ks"], row["Category"]))
+
+    pairs = [p for p in PAIR_ORDER if data.get(p)]
+    if not pairs:
+        print("  [SKIP] kinesin7_gh_comprehensive.png -- no data")
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
+    rng = np.random.default_rng(seed=7)
+
+    for ax, val_idx, xlabel, vline in [
+        (axes[0], 0, "Ka/Ks (ω)",   1.0),
+        (axes[1], 1, "Ks",          None),
+    ]:
+        # Shade homeolog pair background
+        if "GhA vs GhD" in pairs:
+            hi = pairs.index("GhA vs GhD")
+            ax.axhspan(hi - 0.45, hi + 0.45, color="#f3e5f5", zorder=0)
+
+        for i, pair in enumerate(pairs):
+            pts = data[pair]
+            cat_seen = set()
+            for cat in CATEGORIES:
+                vals = [p[val_idx] for p in pts if p[2] == cat]
+                if not vals:
+                    continue
+                jitter = rng.uniform(-0.18, 0.18, size=len(vals))
+                label = cat if cat not in cat_seen else "_nolegend_"
+                cat_seen.add(cat)
+                ax.scatter(vals, np.full(len(vals), i) + jitter,
+                           color=CAT_COLORS.get(cat, "#888888"),
+                           alpha=0.7, s=28, zorder=3, label=label)
+            # Median bar
+            all_vals = [p[val_idx] for p in pts]
+            med = sorted(all_vals)[len(all_vals) // 2]
+            ax.plot([med, med], [i - 0.3, i + 0.3],
+                    color=PAIR_COLORS.get(pair, "#333333"),
+                    linewidth=3, zorder=4)
+
+        if vline is not None:
+            ax.axvline(vline, color="red", linestyle="--", linewidth=1,
+                       label="ω = 1")
+
+        ax.set_yticks(range(len(pairs)))
+        ax.set_yticklabels([PAIR_LABELS[p] for p in pairs], fontsize=9)
+        ax.set_xlabel(xlabel, fontsize=11)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.invert_yaxis()
+
+        # Legend only on left panel
+        if ax is axes[0]:
+            handles, labels = ax.get_legend_handles_labels()
+            seen = {}
+            for h, l in zip(handles, labels):
+                if l not in seen:
+                    seen[l] = h
+            ax.legend(seen.values(), seen.keys(), fontsize=8,
+                      loc="lower right", framealpha=0.8)
+
+    axes[0].set_title("Selective pressure (Ka/Ks)", fontsize=10, fontweight="bold")
+    axes[1].set_title("Synonymous divergence (Ks)", fontsize=10, fontweight="bold")
+    fig.suptitle(
+        "G. hirsutum kinesin-7: homeolog vs inter-species comparisons",
+        fontsize=12, fontweight="bold"
+    )
+    plt.tight_layout()
+    out = os.path.join(figdir, "kinesin7_gh_comprehensive.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out}")
@@ -891,6 +1248,8 @@ def main():
     if kaks_rows:
         plot_kaks_distribution(kaks_rows, FIGDIR)
         plot_kaks_by_category(kaks_rows, FIGDIR)
+        plot_gh_comprehensive(kaks_rows, FIGDIR)
+        plot_phylo_tree(kaks_rows, FIGDIR)
 
     print("\n" + "=" * 60)
     print(" Analysis complete.")
